@@ -1,5 +1,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <Servo.h>
+#include <L298N.h>  // Pastikan library ini sudah diinstall
 
 // WiFi
 const char* ssid = "AGUNG";
@@ -13,87 +15,62 @@ const char* topic = "robot/status";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// L298N pin kontrol motor
-const int IN1 = 14;
-const int IN2 = 27;
-const int IN3 = 26;
-const int IN4 = 25;
+// Motor Driver L298N
+const int ENA = 13;
+const int IN1 = 12;
+const int IN2 = 14;
+const int ENB = 25;
+const int IN3 = 27;
+const int IN4 = 26;
 
-// ENA & ENB (PWM kontrol kecepatan motor)
-const int ENA = 33;
-const int ENB = 32;
-int kecepatanMotor = 200; // nilai PWM (0 - 255)
+int speed = 255;
 
-// LED indikator
-const int ledKiri = 2;
-const int ledKanan = 4;
-const int ledTengah = 5;
+L298N motorA(ENA, IN1, IN2); // Motor A (kiri)
+L298N motorB(ENB, IN3, IN4); // Motor B (kanan)
 
 // Ultrasonik HC-SR04
-const int trigPin = 12;
-const int echoPin = 13;
-long durasi;
-float jarak;
+const int trigPin = 33;
+const int echoPin = 32;
 
-void setup_wifi() {
-  delay(10);
-  Serial.println("Menghubungkan ke WiFi...");
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nWiFi terhubung");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
-}
+// Servo
+const int servoPin = 15;
+Servo servo;
 
-// Fungsi ultrasonik
-float bacaJarak() {
+long bacaJarak() {
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
-  durasi = pulseIn(echoPin, HIGH);
-  return durasi * 0.034 / 2; // Konversi ke cm
+  long durasi = pulseIn(echoPin, HIGH);
+  return durasi * 0.034 / 2;
 }
 
-// Fungsi kendali motor
+// Fungsi gerak motor
 void maju() {
-  analogWrite(ENA, kecepatanMotor);
-  analogWrite(ENB, kecepatanMotor);
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
+  motorA.setSpeed(speed);
+  motorB.setSpeed(speed);
+  motorA.forward();
+  motorB.forward();
 }
 
 void kiri() {
-  analogWrite(ENA, kecepatanMotor);
-  analogWrite(ENB, kecepatanMotor);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
+  motorA.setSpeed(speed);
+  motorB.setSpeed(speed);
+  motorA.backward();
+  motorB.forward();
 }
 
 void kanan() {
-  analogWrite(ENA, kecepatanMotor);
-  analogWrite(ENB, kecepatanMotor);
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
+  motorA.setSpeed(speed);
+  motorB.setSpeed(speed);
+  motorA.forward();
+  motorB.backward();
 }
 
 void berhenti() {
-  analogWrite(ENA, 0);
-  analogWrite(ENB, 0);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, LOW);
+  motorA.stop();
+  motorB.stop();
 }
 
 // Callback MQTT
@@ -102,7 +79,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
   for (unsigned int i = 0; i < length; i++) {
     pesan += (char)payload[i];
   }
-
   pesan.trim();
   Serial.print("Pesan diterima: ");
   Serial.println(pesan);
@@ -113,19 +89,18 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   if (pesan == "Kiri") {
     kiri();
-    digitalWrite(ledKiri, HIGH);
   } else if (pesan == "Kanan") {
     kanan();
-    digitalWrite(ledKanan, HIGH);
-  } else if (pesan == "Tengah" || pesan == "Atas") {
+  } else if (pesan == "Tengah") {
     maju();
-    digitalWrite(ledTengah, HIGH);
   } else if (pesan == "Bawah") {
     berhenti();
+  } else if (pesan == "Atas") {
+    maju();
   }
 }
 
-// Reconnect MQTT
+// MQTT
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Menghubungkan ke MQTT...");
@@ -141,22 +116,33 @@ void reconnect() {
   }
 }
 
+// WiFi
+void setup_wifi() {
+  delay(10);
+  Serial.println("Menghubungkan ke WiFi...");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi terhubung");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Setup awal
 void setup() {
   Serial.begin(115200);
 
-  pinMode(IN1, OUTPUT);
-  pinMode(IN2, OUTPUT);
-  pinMode(IN3, OUTPUT);
-  pinMode(IN4, OUTPUT);
-  pinMode(ENA, OUTPUT);
-  pinMode(ENB, OUTPUT);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
 
   pinMode(ledKiri, OUTPUT);
   pinMode(ledKanan, OUTPUT);
   pinMode(ledTengah, OUTPUT);
 
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
+  servo.attach(servoPin);
+  servo.write(0); // posisi awal
 
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
@@ -169,16 +155,17 @@ void loop() {
   }
   client.loop();
 
-  // Cek jarak
-  jarak = bacaJarak();
+  long jarak = bacaJarak();
   Serial.print("Jarak: ");
-  Serial.print(jarak);
-  Serial.println(" cm");
+  Serial.println(jarak);
 
-  if (jarak <= 2.0) {
+  if (jarak <= 2) {
     berhenti();
-    Serial.println("Benda terlalu dekat, berhenti.");
-  }
+    Serial.println("Objek dekat - servo aktif");
 
-  delay(100);
+    servo.write(90); // ambil
+    delay(1000);
+    servo.write(0);  // kembali
+    delay(1000);
+  }
 }
